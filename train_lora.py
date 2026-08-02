@@ -122,6 +122,7 @@ training_args = SFTConfig(
 # schema/dataset version is detected and ignored instead of corrupting
 # this run).
 import os
+import shutil
 import hashlib
 
 checkpoint_dir = cfg["training"]["output_dir"]
@@ -134,6 +135,18 @@ run_signature = hashlib.sha256(
 ).hexdigest()[:16]
 signature_path = os.path.join(checkpoint_dir, "RUN_SIGNATURE.txt")
 
+
+def checkpoint_step(dirname):
+    """Extract the numeric step count from a 'checkpoint-N' folder name.
+
+    NOTE: plain sorted(list_of_names) sorts as text, so 'checkpoint-900'
+    comes after 'checkpoint-2600' alphabetically even though 900 < 2600.
+    Sorting by this numeric key instead is what actually picks the latest
+    checkpoint once step counts cross a digit-length boundary (e.g. 999 -> 1000).
+    """
+    return int(dirname.split("-")[-1])
+
+
 latest_checkpoint = None
 if os.path.exists(checkpoint_dir):
     existing_signature = None
@@ -142,12 +155,28 @@ if os.path.exists(checkpoint_dir):
             existing_signature = f.read().strip()
 
     if existing_signature != run_signature:
-        print(f"Found checkpoint dir from a different run (signature mismatch) — "
-              f"ignoring it and starting fresh to avoid resuming into the wrong data.")
+        print("Found checkpoint dir from a different run (signature mismatch) — "
+              "deleting it and starting fully fresh (old checkpoints are from "
+              "training that used different data/format and must never be mixed "
+              "in with this run's step numbering).")
+        # checkpoint_dir may be a symlink (e.g. pointed at a Google Drive
+        # folder so checkpoints survive Colab disconnects). shutil.rmtree()
+        # refuses to operate on a symlink directly — it raises OSError
+        # rather than silently deleting through it — so resolve to the
+        # real target first and clear that, leaving the symlink itself intact.
+        real_dir = os.path.realpath(checkpoint_dir) if os.path.islink(checkpoint_dir) else checkpoint_dir
+        shutil.rmtree(real_dir)
+        # Recreate the real target explicitly rather than relying on a later
+        # os.makedirs(checkpoint_dir) to correctly follow a now-dangling
+        # symlink and materialize the directory at its target — that
+        # behavior isn't guaranteed portable, so do it directly here.
+        os.makedirs(real_dir, exist_ok=True)
     else:
         checkpoints = [d for d in os.listdir(checkpoint_dir) if d.startswith("checkpoint-")]
         if checkpoints:
-            latest_checkpoint = os.path.join(checkpoint_dir, sorted(checkpoints)[-1])
+            latest_checkpoint = os.path.join(
+                checkpoint_dir, max(checkpoints, key=checkpoint_step)
+            )
             print(f"Resuming from checkpoint: {latest_checkpoint}")
 
 os.makedirs(checkpoint_dir, exist_ok=True)
