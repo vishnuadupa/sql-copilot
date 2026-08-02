@@ -7,7 +7,6 @@ Run on Colab with free T4 GPU. ~1-2 hours total.
 from unsloth import FastLanguageModel
 import yaml
 import torch
-from peft import LoraConfig, TaskType
 from trl import SFTTrainer, SFTConfig
 from datasets import load_dataset, Dataset
 
@@ -56,14 +55,16 @@ eval_dataset = raw_dataset["validation"].map(format_prompt).select(
 print(f"Training examples: {len(train_dataset)}")
 print(f"Eval examples: {len(eval_dataset)}")
 
-# LoRA config
-peft_config = LoraConfig(
+# Attach LoRA adapters to the quantized model (must happen before the trainer
+# is built — SFTTrainer's own peft_config= path does not work on a 4-bit model)
+model = FastLanguageModel.get_peft_model(
+    model,
     r=cfg["lora"]["r"],
     lora_alpha=cfg["lora"]["lora_alpha"],
     target_modules=cfg["lora"]["target_modules"],
     lora_dropout=cfg["lora"]["lora_dropout"],
     bias="none",
-    task_type=TaskType.CAUSAL_LM,
+    use_gradient_checkpointing="unsloth",
 )
 
 # Training args — using SFTConfig (modern TRL API bundles seq-length/packing here,
@@ -102,7 +103,6 @@ trainer = SFTTrainer(
     model=model,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
-    peft_config=peft_config,
     args=training_args,
 )
 
