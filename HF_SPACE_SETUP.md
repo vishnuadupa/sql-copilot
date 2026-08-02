@@ -8,7 +8,7 @@ This creates the live web UI for your model. **Do these steps once before Colab 
 2. Fill in:
    - **Space name:** `sql-copilot`
    - **License:** Apache 2.0
-   - **SDK:** Docker
+   - **SDK:** Gradio (FREE)
    - Click **Create Space**
 
 3. You'll be redirected to: `https://huggingface.co/spaces/vishnuadupa/sql-copilot`
@@ -22,53 +22,46 @@ git clone https://huggingface.co/spaces/vishnuadupa/sql-copilot space-repo
 cd space-repo
 ```
 
-## Step 3: Add Files to Space
+## Step 3: Add Required Files
 
-Copy your project files into the Space repo:
+Copy minimal files to the Space repo:
 
 ```bash
 # From your project directory
 cd D:\ML\sql-copilot
 
-# Copy key files to the Space
+# Copy to Space
 cp app.py ../space-repo/
-cp Dockerfile ../space-repo/
 cp requirements.txt ../space-repo/
-cp config.yaml ../space-repo/
-cp README.md ../space-repo/
 
 cd ../space-repo
 ```
 
-## Step 4: Create `.dockerignore` (optional but recommended)
+## Step 4: Create `.gitignore`
 
 ```bash
 echo "__pycache__/
 *.pyc
-.git
-.gitignore
 *.db
-NEXT_STEPS.md
-COLAB_TRAINING_GUIDE.md
-train_lora.py
-eval.py
-.env" > .dockerignore
+*.sqlite
+.env
+runs/
+qwen-sql-lora/" > .gitignore
 ```
 
 ## Step 5: Commit & Push to HF Space
 
 ```bash
 git add -A
-git commit -m "Initial SQL Copilot deployment"
+git commit -m "Initial SQL Copilot deployment with Gradio"
 git push
 ```
 
 ## Step 6: Wait for Build
 
 1. Go to https://huggingface.co/spaces/vishnuadupa/sql-copilot
-2. Click "Build logs" in the top right
-3. Wait for green checkmark (~5-10 min)
-4. Once done, your Space URL is live!
+2. Space auto-builds (should be <1 min for Gradio, no Docker overhead)
+3. Once green, your Space URL is live!
 
 ## Step 7: Test
 
@@ -84,30 +77,10 @@ You'll see a Gradio UI where you can:
 
 ## Important Notes
 
+- **Gradio SDK is free** — no Docker overhead, instant deployment
 - **First run is slow:** The Space will download Qwen model (~3GB) on first load. Takes 2-3 min.
-- **LoRA adapter:** App looks for `./qwen-sql-lora/` locally. After Colab training, you need to download the fine-tuned adapter and commit it to the Space repo, OR update `app.py` to load from HF Hub directly.
-
-### Option A: Load from HF Hub (Recommended)
-
-Edit `app.py` line ~16:
-
-```python
-# Before:
-adapter_path = "./qwen-sql-lora"
-
-# After:
-adapter_path = "vishnuadupa/qwen-sql-lora"  # Load directly from HF Hub
-```
-
-Then commit:
-```bash
-git add app.py
-git commit -m "Load model from HF Hub"
-git push
-```
-
-This way, the Space always pulls your latest trained model automatically.
+- **Model loads from HF Hub:** `app.py` is already configured to load your fine-tuned adapter from HF Hub automatically. Once you train on Colab, the Space automatically uses your latest model. ✅
 
 ---
 
-**Done!** Your Space is live. It'll wait for you to train the model and push the LoRA adapter to HF Hub.
+**Done!** Your Space is live and configured. After Colab training finishes, the Space will automatically use your new fine-tuned model. No manual updates needed.
