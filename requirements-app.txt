@@ -1,0 +1,7 @@
+# For deployment/inference only (lighter than training requirements)
+torch==2.1.2
+transformers==4.36.2
+peft==0.7.1
+fastapi==0.104.1
+uvicorn==0.24.0
+gradio==4.15.0

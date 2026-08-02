@@ -9,10 +9,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy project
-COPY . .
+COPY app.py .
+COPY config.yaml .
+COPY requirements-app.txt .
 
-# Install Python deps
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python deps (lightweight for inference only)
+RUN pip install --no-cache-dir -r requirements-app.txt
 
 # Expose port
 EXPOSE 7860

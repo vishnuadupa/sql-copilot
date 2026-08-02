@@ -23,20 +23,26 @@ async def lifespan(app: FastAPI):
     """Load model on startup, unload on shutdown."""
     global model, tokenizer
     print("Loading fine-tuned model...")
-    adapter_path = "./qwen-sql-lora"
 
-    if os.path.exists(adapter_path):
+    # Try to load from HF Hub (set this to your repo after training)
+    adapter_path = "vishnuadupa/qwen-sql-lora"
+
+    try:
+        print(f"Loading adapter from HF Hub: {adapter_path}")
         tokenizer = AutoTokenizer.from_pretrained(adapter_path)
         model = AutoPeftModelForCausalLM.from_pretrained(adapter_path, device_map="auto")
         model = model.merge_and_unload()
-    else:
-        print("Warning: LoRA adapter not found. Using base model.")
+        print("✓ Fine-tuned model loaded!")
+    except Exception as e:
+        print(f"⚠ Could not load fine-tuned model: {e}")
+        print("Falling back to base model...")
         tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-1.5B-Instruct")
         model = AutoModelForCausalLM.from_pretrained(
             "Qwen/Qwen2.5-Coder-1.5B-Instruct",
             torch_dtype=torch.float16,
             device_map="auto"
         )
+        print("✓ Base model loaded")
 
     yield
     print("Unloading model...")
