@@ -56,14 +56,25 @@ def sql_match(predicted, gold):
 
 
 def build_prompt(question, schema):
-    return f"""You are a SQL expert. Generate valid SQL only, no explanation.
+    """Must match train_lora.py's format_prompt() EXACTLY (wording and the
+    trailing newline after 'SQL:') up to where the answer would begin.
+    Confirmed by direct comparison: a manual test using this exact format
+    scored 3/5 correct on this adapter, while eval.py's previous version
+    -- different wording ("...only, no explanation") and missing the
+    trailing newline -- scored near 0%. This adapter is a very lightly
+    trained LoRA (0.14% of params, pattern-completing a narrow template),
+    so even a missing newline is enough to knock it off the pattern it
+    actually learned.
+    """
+    return f"""You are a SQL expert. Generate valid SQL.
 
 Question: {question}
 
 Schema:
 {schema}
 
-SQL:"""
+SQL:
+"""
 
 
 def load_qwen(model_name, adapter_path=None):

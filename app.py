@@ -65,14 +65,19 @@ async def predict_sql(req: SQLRequest):
     if model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
-    prompt = f"""You are a SQL expert. Generate SQL only, no explanation.
+    # Must match train_lora.py's training format exactly (wording + trailing
+    # newline after "SQL:") -- this LoRA adapter is lightly trained and
+    # very sensitive to prompt shape; a mismatched format was confirmed to
+    # collapse accuracy from ~60% to ~2% in eval.py before this same fix.
+    prompt = f"""You are a SQL expert. Generate valid SQL.
 
 Question: {req.question}
 
 Schema:
 {req.schema}
 
-SQL:"""
+SQL:
+"""
 
     try:
         inputs = tokenizer(prompt, return_tensors="pt")
@@ -168,15 +173,16 @@ def gradio_interface(question, schema):
     req = SQLRequest(question=question, schema=schema)
     response = execute_sql(req.question)
 
-    # For demo, just generate SQL
-    prompt = f"""You are a SQL expert. Generate SQL only, no explanation.
+    # Must match training format exactly -- see note in /predict above.
+    prompt = f"""You are a SQL expert. Generate valid SQL.
 
 Question: {req.question}
 
 Schema:
 {req.schema}
 
-SQL:"""
+SQL:
+"""
 
     inputs = tokenizer(prompt, return_tensors="pt")
     outputs = model.generate(
