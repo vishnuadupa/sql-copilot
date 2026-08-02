@@ -89,6 +89,11 @@ SQL:"""
         if "```" in sql:
             sql = sql.split("```")[1].split("```")[0].strip()
 
+        # Take first line only: the model's actual answer is always the
+        # first line, and it can drift into commentary (or even a second,
+        # unrelated code block) afterward on lightly-trained checkpoints.
+        sql = sql.split("\n")[0].strip()
+
         return SQLResponse(sql=sql)
     except Exception as e:
         return SQLResponse(sql="", error=str(e))
@@ -182,6 +187,8 @@ SQL:"""
         pad_token_id=tokenizer.eos_token_id,
     )
     sql = tokenizer.decode(outputs[0], skip_special_tokens=True).split("SQL:")[-1].strip()
+    # Take first line only — see note in /predict above.
+    sql = sql.split("\n")[0].strip()
 
     try:
         results = execute_sql(sql)

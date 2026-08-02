@@ -24,12 +24,22 @@ groq_client = Groq(api_key=os.getenv("GROQ_API_KEY", ""))
 
 
 def extract_sql(text):
-    """Extract SQL from model response."""
+    """Extract SQL from model response.
+
+    Take the first non-empty line only. Confirmed via manual inspection
+    of raw generations that the model consistently puts its actual answer
+    as the first line after "SQL:", then sometimes drifts into commentary
+    or even a second, unrelated ```sql``` block afterward — searching for
+    a code fence anywhere in the text (the old approach) could grab that
+    later, wrong block instead of the real answer.
+    """
+    text = text.strip()
     if "```sql" in text:
-        return text.split("```sql")[1].split("```")[0].strip()
+        text = text.split("```sql")[1].split("```")[0].strip()
     elif "```" in text:
-        return text.split("```")[1].split("```")[0].strip()
-    return text.strip()
+        text = text.split("```")[1].split("```")[0].strip()
+    first_line = text.split("\n")[0].strip()
+    return first_line
 
 
 def normalize_sql(sql):
