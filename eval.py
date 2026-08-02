@@ -1,31 +1,23 @@
 """
-Evaluation harness: compare fine-tuned Qwen vs. base vs. Groq on Spider validation set.
-Metric: execution accuracy (generated SQL runs and returns correct result).
+Evaluation harness: compare fine-tuned Qwen vs. base Qwen vs. Groq Llama on Spider validation set.
+Metric: normalized exact-match accuracy (predicted SQL == gold SQL after normalization).
+
+Note: We use exact-match rather than execution accuracy because execution accuracy
+requires the actual per-question Spider SQLite databases, which are large and
+Google-Drive-hosted (not available as a lightweight HF mirror). Exact-match is a
+standard, widely-reported NL2SQL metric.
 """
 
-import json
-import sqlite3
+import os
 import pandas as pd
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import AutoPeftModelForCausalLM
 import torch
 from groq import Groq
-import os
 
-# Initialize Groq (requires GROQ_API_KEY env var)
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY", ""))
 
-def execute_sql(sql, db_path="sample.db"):
-    """Execute SQL and return result set as tuple of tuples."""
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute(sql)
-        result = tuple(sorted(cursor.fetchall()))
-        conn.close()
-        return result
-    except Exception as e:
-        return None
 
 def extract_sql(text):
     """Extract SQL from model response."""
@@ -35,38 +27,22 @@ def extract_sql(text):
         return text.split("```")[1].split("```")[0].strip()
     return text.strip()
 
-def eval_qwen_base(question, schema):
-    """Base Qwen2.5-Coder (no fine-tuning)."""
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-1.5B-Instruct")
-    model = AutoModelForCausalLM.from_pretrained(
-        "Qwen/Qwen2.5-Coder-1.5B-Instruct",
-        torch_dtype=torch.float16,
-        device_map="auto"
-    )
 
-    prompt = f"""You are a SQL expert. Given a natural language question and database schema, generate valid SQL.
+def normalize_sql(sql):
+    """Normalize SQL for comparison: lowercase, collapse whitespace, strip trailing semicolon."""
+    if not sql:
+        return ""
+    normalized = " ".join(sql.lower().split())
+    return normalized.rstrip(";").strip()
 
-Question: {question}
 
-Schema:
-{schema}
+def sql_match(predicted, gold):
+    """Normalized exact-match between predicted and gold SQL."""
+    return normalize_sql(predicted) == normalize_sql(gold)
 
-SQL:"""
 
-    inputs = tokenizer(prompt, return_tensors="pt")
-    outputs = model.generate(**inputs, max_new_tokens=256, temperature=0.7)
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return extract_sql(response.split("SQL:")[-1])
-
-def eval_qwen_finetuned(question, schema, adapter_path="./qwen-sql-lora"):
-    """Fine-tuned Qwen with LoRA adapter."""
-    from peft import AutoPeftModelForCausalLM
-
-    tokenizer = AutoTokenizer.from_pretrained(adapter_path)
-    model = AutoPeftModelForCausalLM.from_pretrained(adapter_path, device_map="auto")
-    model = model.merge_and_unload()
-
-    prompt = f"""You are a SQL expert. Given a natural language question and database schema, generate valid SQL.
+def build_prompt(question, schema):
+    return f"""You are a SQL expert. Generate valid SQL only, no explanation.
 
 Question: {question}
 
@@ -75,85 +51,87 @@ Schema:
 
 SQL:"""
 
-    inputs = tokenizer(prompt, return_tensors="pt")
-    outputs = model.generate(**inputs, max_new_tokens=256, temperature=0.7)
+
+def load_qwen(model_name, adapter_path=None):
+    """Load Qwen once (base or with a LoRA adapter merged in)."""
+    if adapter_path and os.path.exists(adapter_path):
+        tokenizer = AutoTokenizer.from_pretrained(adapter_path)
+        model = AutoPeftModelForCausalLM.from_pretrained(adapter_path, device_map="auto")
+        model = model.merge_and_unload()
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype=torch.float16, device_map="auto"
+        )
+    return model, tokenizer
+
+
+def generate_sql(model, tokenizer, question, schema):
+    prompt = build_prompt(question, schema)
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    outputs = model.generate(**inputs, max_new_tokens=256, temperature=0.7, do_sample=True)
     response = tokenizer.decode(outputs[0], skip_special_tokens=True)
     return extract_sql(response.split("SQL:")[-1])
+
 
 def eval_groq(question, schema):
-    """Groq Llama-3.1-8B via free API."""
+    """Llama-3.1-8B via Groq's free API (OpenAI-compatible chat completions)."""
     try:
-        message = groq_client.messages.create(
+        completion = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             max_tokens=256,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"""You are a SQL expert. Given a natural language question and database schema, generate valid SQL only, no explanation.
-
-Question: {question}
-
-Schema:
-{schema}
-
-SQL:"""
-                }
-            ]
+            messages=[{"role": "user", "content": build_prompt(question, schema)}],
         )
-        return extract_sql(message.content[0].text)
+        return extract_sql(completion.choices[0].message.content)
     except Exception as e:
         print(f"Groq error: {e}")
         return None
 
-def run_eval(num_samples=50):
-    """Run evaluation on Spider validation set."""
+
+def run_eval(num_samples=50, model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", adapter_path="./qwen-sql-lora"):
+    print("Loading Spider validation set...")
     dataset = load_dataset("xlangai/spider")
     val_data = dataset["validation"].select(range(min(num_samples, len(dataset["validation"]))))
+
+    print("Loading base Qwen (no fine-tuning)...")
+    base_model, base_tokenizer = load_qwen(model_name)
+
+    print("Loading fine-tuned Qwen (LoRA adapter)...")
+    ft_model, ft_tokenizer = load_qwen(model_name, adapter_path=adapter_path)
 
     results = []
 
     for i, example in enumerate(val_data):
-        question = example["question"]
-        gold_sql = example["query"]
-        schema = example["db_schema"]
+        question = example.get("question", "")
+        gold_sql = example.get("query", "")
+        db_id = example.get("db_id", "")
+        schema = example.get("db_schema", example.get("schema", f"Database: {db_id}"))
 
-        print(f"\n[{i+1}/{len(val_data)}] Evaluating: {question[:60]}...")
+        print(f"[{i + 1}/{len(val_data)}] {question[:60]}...")
 
-        # Predictions
-        pred_base = eval_qwen_base(question, schema)
-        pred_ft = eval_qwen_finetuned(question, schema)
+        pred_base = generate_sql(base_model, base_tokenizer, question, schema)
+        pred_ft = generate_sql(ft_model, ft_tokenizer, question, schema)
         pred_groq = eval_groq(question, schema)
-
-        # Execution
-        gold_result = execute_sql(gold_sql)
-        result_base = execute_sql(pred_base) if pred_base else None
-        result_ft = execute_sql(pred_ft) if pred_ft else None
-        result_groq = execute_sql(pred_groq) if pred_groq else None
-
-        # Accuracy: 1 if execution result matches gold, 0 otherwise
-        acc_base = 1 if result_base == gold_result else 0
-        acc_ft = 1 if result_ft == gold_result else 0
-        acc_groq = 1 if result_groq == gold_result else 0
 
         results.append({
             "question": question[:60],
-            "base_qwen": acc_base,
-            "qwen_finetuned": acc_ft,
-            "groq_llama": acc_groq,
+            "base_qwen": int(sql_match(pred_base, gold_sql)),
+            "qwen_finetuned": int(sql_match(pred_ft, gold_sql)),
+            "groq_llama": int(sql_match(pred_groq, gold_sql)) if pred_groq else 0,
         })
 
     df = pd.DataFrame(results)
-    print("\n" + "="*60)
-    print("EVALUATION RESULTS")
-    print("="*60)
-    print(df.describe())
-    print("\nModel Accuracy Summary:")
-    print(f"Base Qwen: {df['base_qwen'].mean():.2%}")
+    print("\n" + "=" * 60)
+    print("EVALUATION RESULTS (normalized exact-match accuracy)")
+    print("=" * 60)
+    print(f"Base Qwen:       {df['base_qwen'].mean():.2%}")
     print(f"Qwen Fine-tuned: {df['qwen_finetuned'].mean():.2%}")
-    print(f"Groq Llama: {df['groq_llama'].mean():.2%}")
+    print(f"Groq Llama:      {df['groq_llama'].mean():.2%}")
 
     df.to_csv("eval_results.csv", index=False)
     print("\nResults saved to eval_results.csv")
+    return df
+
 
 if __name__ == "__main__":
     run_eval(num_samples=50)
