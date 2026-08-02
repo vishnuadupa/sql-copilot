@@ -108,6 +108,41 @@ training_args = SFTConfig(
     packing=False,
 )
 
+# Auto-resume from latest checkpoint, but ONLY if it was produced by this
+# exact dataset/config (a checkpoint from a previous run with different
+# training data must never be silently resumed into — the run tags its
+# output dir with a signature file so a stale checkpoint from an older
+# schema/dataset version is detected and ignored instead of corrupting
+# this run).
+import os
+import hashlib
+
+checkpoint_dir = cfg["training"]["output_dir"]
+run_signature = hashlib.sha256(
+    f"b-mc2/sql-create-context|seed=42|train=100:7100".encode()
+).hexdigest()[:16]
+signature_path = os.path.join(checkpoint_dir, "RUN_SIGNATURE.txt")
+
+latest_checkpoint = None
+if os.path.exists(checkpoint_dir):
+    existing_signature = None
+    if os.path.exists(signature_path):
+        with open(signature_path) as f:
+            existing_signature = f.read().strip()
+
+    if existing_signature != run_signature:
+        print(f"Found checkpoint dir from a different run (signature mismatch) — "
+              f"ignoring it and starting fresh to avoid resuming into the wrong data.")
+    else:
+        checkpoints = [d for d in os.listdir(checkpoint_dir) if d.startswith("checkpoint-")]
+        if checkpoints:
+            latest_checkpoint = os.path.join(checkpoint_dir, sorted(checkpoints)[-1])
+            print(f"Resuming from checkpoint: {latest_checkpoint}")
+
+os.makedirs(checkpoint_dir, exist_ok=True)
+with open(signature_path, "w") as f:
+    f.write(run_signature)
+
 # Trainer
 print("Starting training...")
 trainer = SFTTrainer(
@@ -116,16 +151,6 @@ trainer = SFTTrainer(
     eval_dataset=eval_dataset,
     args=training_args,
 )
-
-# Auto-resume from latest checkpoint if interrupted
-import os
-checkpoint_dir = cfg["training"]["output_dir"]
-latest_checkpoint = None
-if os.path.exists(checkpoint_dir):
-    checkpoints = [d for d in os.listdir(checkpoint_dir) if d.startswith("checkpoint-")]
-    if checkpoints:
-        latest_checkpoint = os.path.join(checkpoint_dir, sorted(checkpoints)[-1])
-        print(f"Resuming from checkpoint: {latest_checkpoint}")
 
 trainer.train(resume_from_checkpoint=latest_checkpoint)
 

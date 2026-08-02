@@ -8,3 +8,5 @@ unsloth_zoo
 bitsandbytes
 pyyaml
 datasets
+groq
+pandas
