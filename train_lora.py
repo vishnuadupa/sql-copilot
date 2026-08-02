@@ -44,7 +44,14 @@ eval_dataset_raw = full.select(range(100))
 train_dataset_raw = full.select(range(100, 7100))
 
 def format_prompt(example):
-    """Format training example with real schema."""
+    """Format training example with real schema.
+
+    Appends the tokenizer's EOS token after the SQL answer. Without this,
+    the model never learns where an answer ends and — confirmed by
+    inspecting raw generations — keeps appending plausible-looking but
+    wrong extra clauses (ORDER BY/LIMIT/GROUP BY) after a correct answer,
+    since nothing in training ever taught it to stop.
+    """
     question = example["question"]
     schema = example["context"]
     sql = example["answer"]
@@ -58,7 +65,7 @@ Schema:
 
 SQL:
 {sql}"""
-    return {"text": prompt}
+    return {"text": prompt + tokenizer.eos_token}
 
 train_dataset = train_dataset_raw.map(format_prompt)
 eval_dataset = eval_dataset_raw.map(format_prompt)
@@ -118,8 +125,12 @@ import os
 import hashlib
 
 checkpoint_dir = cfg["training"]["output_dir"]
+# v2: added EOS token after each training example so the model learns to
+# stop instead of appending extra clauses after a correct answer. Bumping
+# this tag forces a fresh run instead of resuming into the old v1
+# checkpoint, which was trained without that fix.
 run_signature = hashlib.sha256(
-    f"b-mc2/sql-create-context|seed=42|train=100:7100".encode()
+    f"b-mc2/sql-create-context|seed=42|train=100:7100|v2-eos-fix".encode()
 ).hexdigest()[:16]
 signature_path = os.path.join(checkpoint_dir, "RUN_SIGNATURE.txt")
 

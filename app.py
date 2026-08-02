@@ -76,7 +76,13 @@ SQL:"""
 
     try:
         inputs = tokenizer(prompt, return_tensors="pt")
-        outputs = model.generate(**inputs, max_new_tokens=256, temperature=0.7)
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=256,
+            temperature=0.7,
+            eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.eos_token_id,
+        )
         response = tokenizer.decode(outputs[0], skip_special_tokens=True)
         sql = response.split("SQL:")[-1].strip()
 
@@ -168,7 +174,13 @@ Schema:
 SQL:"""
 
     inputs = tokenizer(prompt, return_tensors="pt")
-    outputs = model.generate(**inputs, max_new_tokens=256, temperature=0.7)
+    outputs = model.generate(
+        **inputs,
+        max_new_tokens=256,
+        temperature=0.7,
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.eos_token_id,
+    )
     sql = tokenizer.decode(outputs[0], skip_special_tokens=True).split("SQL:")[-1].strip()
 
     try:
