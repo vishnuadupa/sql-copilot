@@ -107,7 +107,7 @@ SQL:"""
 
 def run_eval(num_samples=50):
     """Run evaluation on Spider validation set."""
-    dataset = load_dataset("yale-lily/spider")
+    dataset = load_dataset("xlangai/spider")
     val_data = dataset["validation"].select(range(min(num_samples, len(dataset["validation"]))))
 
     results = []
