@@ -3,13 +3,14 @@ LoRA fine-tuning Qwen2.5-Coder on Spider dataset.
 Run on Colab with free T4 GPU. ~2 hours total.
 """
 
+# CRITICAL: Import unsloth FIRST before other libraries
+from unsloth import FastLanguageModel
 import yaml
 import torch
 from datasets import load_dataset
 from transformers import AutoTokenizer, TrainingArguments
 from peft import LoraConfig, TaskType
 from trl import SFTTrainer
-from unsloth import FastLanguageModel
 
 # Load config
 with open("config.yaml") as f:
@@ -43,7 +44,7 @@ print("Loading Spider dataset...")
 dataset = load_dataset("yale-lily/spider")
 
 def format_prompt(example):
-    """Format NL question + schema → SQL instruction."""
+    """Format NL question + schema -> SQL instruction."""
     question = example["question"]
     sql = example["query"]
     schema = example["db_schema"]
