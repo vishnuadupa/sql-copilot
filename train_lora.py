@@ -1,6 +1,10 @@
 """
-LoRA fine-tuning Qwen2.5-Coder on Spider dataset.
+LoRA fine-tuning Qwen2.5-Coder on NL-to-SQL data with real schema context.
 Run on Colab with free T4 GPU. ~1-2 hours total.
+
+Dataset: b-mc2/sql-create-context — each example includes the actual
+CREATE TABLE schema text (not just a database name), so the model
+learns to read a schema, not memorize specific database names.
 """
 
 # CRITICAL: Import unsloth FIRST before other libraries
@@ -8,7 +12,7 @@ from unsloth import FastLanguageModel
 import yaml
 import torch
 from trl import SFTTrainer, SFTConfig
-from datasets import load_dataset, Dataset
+from datasets import load_dataset
 
 # Load config
 with open("config.yaml") as f:
@@ -27,33 +31,40 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     load_in_4bit=True,
 )
 
-# Load Spider dataset — parquet mirror on HF Hub, no loading script needed
-print("Loading Spider dataset from HF Hub...")
-raw_dataset = load_dataset("xlangai/spider")
+# Load dataset with real schema context
+print("Loading b-mc2/sql-create-context dataset...")
+raw = load_dataset("b-mc2/sql-create-context")
+
+# Shuffle once with a fixed seed, then split deterministically:
+# first 100 examples -> eval.py's held-out set (NEVER used in training)
+# next 7000 examples -> training set
+# Same seed + same slicing must be used in eval.py to guarantee zero overlap.
+full = raw["train"].shuffle(seed=42)
+eval_dataset_raw = full.select(range(100))
+train_dataset_raw = full.select(range(100, 7100))
 
 def format_prompt(example):
-    """Format training example."""
-    question = example.get("question", "")
-    sql = example.get("query", "")
-    db_id = example.get("db_id", "")
+    """Format training example with real schema."""
+    question = example["question"]
+    schema = example["context"]
+    sql = example["answer"]
 
     prompt = f"""You are a SQL expert. Generate valid SQL.
 
 Question: {question}
 
-Database: {db_id}
+Schema:
+{schema}
 
 SQL:
 {sql}"""
     return {"text": prompt}
 
-train_dataset = raw_dataset["train"].map(format_prompt)
-eval_dataset = raw_dataset["validation"].map(format_prompt).select(
-    range(min(100, len(raw_dataset["validation"])))
-)
+train_dataset = train_dataset_raw.map(format_prompt)
+eval_dataset = eval_dataset_raw.map(format_prompt)
 
 print(f"Training examples: {len(train_dataset)}")
-print(f"Eval examples: {len(eval_dataset)}")
+print(f"Eval examples: {len(eval_dataset)} (held out, disjoint from training)")
 
 # Attach LoRA adapters to the quantized model (must happen before the trainer
 # is built — SFTTrainer's own peft_config= path does not work on a 4-bit model)
@@ -79,11 +90,11 @@ training_args = SFTConfig(
     lr_scheduler_type="cosine",
     warmup_steps=50,
     logging_steps=50,
-    eval_steps=200,
-    save_steps=200,
+    eval_steps=cfg["training"]["eval_steps"],
+    save_steps=cfg["training"]["save_steps"],
     eval_strategy="steps",
     save_strategy="steps",
-    save_total_limit=2,
+    save_total_limit=cfg["training"]["save_total_limit"],
     load_best_model_at_end=True,
     metric_for_best_model="eval_loss",
     push_to_hub=True,

@@ -1,11 +1,15 @@
 """
-Evaluation harness: compare fine-tuned Qwen vs. base Qwen vs. Groq Llama on Spider validation set.
+Evaluation harness: compare fine-tuned Qwen vs. base Qwen vs. Groq Llama.
 Metric: normalized exact-match accuracy (predicted SQL == gold SQL after normalization).
 
-Note: We use exact-match rather than execution accuracy because execution accuracy
-requires the actual per-question Spider SQLite databases, which are large and
-Google-Drive-hosted (not available as a lightweight HF mirror). Exact-match is a
-standard, widely-reported NL2SQL metric.
+Dataset: b-mc2/sql-create-context (includes real CREATE TABLE schema per
+example, unlike the Spider parquet mirror which only has a bare db_id).
+All three models are given the same real schema in the prompt, so this
+is an apples-to-apples comparison.
+
+IMPORTANT: uses the exact same shuffle(seed=42) + slice(range(100)) as
+train_lora.py, so this eval set is guaranteed disjoint from the 7000
+examples used in training — no leakage.
 """
 
 import os
@@ -88,10 +92,13 @@ def eval_groq(question, schema):
         return None
 
 
-def run_eval(num_samples=50, model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", adapter_path="./qwen-sql-lora"):
-    print("Loading Spider validation set...")
-    dataset = load_dataset("xlangai/spider")
-    val_data = dataset["validation"].select(range(min(num_samples, len(dataset["validation"]))))
+def run_eval(model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", adapter_path="./qwen-sql-lora"):
+    print("Loading b-mc2/sql-create-context dataset...")
+    raw = load_dataset("b-mc2/sql-create-context")
+
+    # Same seed + same slice as train_lora.py -> guaranteed disjoint from training data
+    full = raw["train"].shuffle(seed=42)
+    val_data = full.select(range(100))
 
     print("Loading base Qwen (no fine-tuning)...")
     base_model, base_tokenizer = load_qwen(model_name)
@@ -102,10 +109,9 @@ def run_eval(num_samples=50, model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", adap
     results = []
 
     for i, example in enumerate(val_data):
-        question = example.get("question", "")
-        gold_sql = example.get("query", "")
-        db_id = example.get("db_id", "")
-        schema = example.get("db_schema", example.get("schema", f"Database: {db_id}"))
+        question = example["question"]
+        gold_sql = example["answer"]
+        schema = example["context"]
 
         print(f"[{i + 1}/{len(val_data)}] {question[:60]}...")
 
@@ -123,6 +129,7 @@ def run_eval(num_samples=50, model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", adap
     df = pd.DataFrame(results)
     print("\n" + "=" * 60)
     print("EVALUATION RESULTS (normalized exact-match accuracy)")
+    print("Same real schema given to all 3 models; eval set disjoint from training data")
     print("=" * 60)
     print(f"Base Qwen:       {df['base_qwen'].mean():.2%}")
     print(f"Qwen Fine-tuned: {df['qwen_finetuned'].mean():.2%}")
@@ -134,4 +141,4 @@ def run_eval(num_samples=50, model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", adap
 
 
 if __name__ == "__main__":
-    run_eval(num_samples=50)
+    run_eval()
