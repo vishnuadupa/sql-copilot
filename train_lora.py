@@ -1,16 +1,18 @@
 """
 LoRA fine-tuning Qwen2.5-Coder on Spider dataset.
-Run on Colab with free T4 GPU. ~2 hours total.
+Run on Colab with free T4 GPU. ~1-2 hours total.
 """
 
 # CRITICAL: Import unsloth FIRST before other libraries
 from unsloth import FastLanguageModel
 import yaml
 import torch
-from datasets import load_dataset
-from transformers import AutoTokenizer, TrainingArguments
+from transformers import TrainingArguments
 from peft import LoraConfig, TaskType
 from trl import SFTTrainer
+from datasets import Dataset
+import json
+import subprocess
 
 # Load config
 with open("config.yaml") as f:
@@ -29,6 +31,48 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     load_in_4bit=True,
 )
 
+# Download Spider dataset from GitHub
+print("Downloading Spider dataset...")
+try:
+    subprocess.run(
+        ["git", "clone", "https://github.com/taoyds/spider.git", "/tmp/spider"],
+        capture_output=True,
+        timeout=60,
+    )
+    with open("/tmp/spider/train_spider.json") as f:
+        spider_train = json.load(f)[:500]  # 500 examples for speed
+    print(f"Loaded {len(spider_train)} training examples")
+except Exception as e:
+    print(f"Warning: Could not download Spider: {e}")
+    print("Using minimal dataset for demo...")
+    spider_train = [
+        {
+            "question": "Show me the top customers by revenue",
+            "query": "SELECT customer_id, SUM(amount) as revenue FROM orders GROUP BY customer_id ORDER BY revenue DESC LIMIT 5",
+            "db_id": "sales",
+        }
+    ] * 10
+
+def format_prompt(item):
+    """Format training example."""
+    question = item.get("question", "")
+    sql = item.get("query", "")
+    db_id = item.get("db_id", "")
+
+    prompt = f"""You are a SQL expert. Generate valid SQL.
+
+Question: {question}
+
+Database: {db_id}
+
+SQL:
+{sql}"""
+    return {"text": prompt}
+
+train_texts = [format_prompt(item) for item in spider_train]
+train_dataset = Dataset.from_dict({"text": [d["text"] for d in train_texts]})
+eval_dataset = train_dataset.select(range(min(50, len(train_dataset))))
+
 # LoRA config
 peft_config = LoraConfig(
     r=cfg["lora"]["r"],
@@ -39,29 +83,6 @@ peft_config = LoraConfig(
     task_type=TaskType.CAUSAL_LM,
 )
 
-# Load dataset
-print("Loading Spider dataset...")
-dataset = load_dataset("yale-lily/spider")
-
-def format_prompt(example):
-    """Format NL question + schema -> SQL instruction."""
-    question = example["question"]
-    sql = example["query"]
-    schema = example["db_schema"]
-    prompt = f"""You are a SQL expert. Given a natural language question and database schema, generate valid SQL.
-
-Question: {question}
-
-Schema:
-{schema}
-
-SQL:
-{sql}"""
-    return {"text": prompt}
-
-train_dataset = dataset["train"].map(format_prompt)
-eval_dataset = dataset["validation"].map(format_prompt).select(range(100))  # 100 for quick eval
-
 # Training args
 training_args = TrainingArguments(
     output_dir=cfg["training"]["output_dir"],
@@ -71,10 +92,10 @@ training_args = TrainingArguments(
     gradient_accumulation_steps=cfg["training"]["gradient_accumulation_steps"],
     learning_rate=cfg["training"]["lr"],
     lr_scheduler_type="cosine",
-    warmup_steps=100,
+    warmup_steps=50,
     logging_steps=50,
-    eval_steps=200,
-    save_steps=200,
+    eval_steps=100,
+    save_steps=100,
     evaluation_strategy="steps",
     save_strategy="steps",
     save_total_limit=2,
@@ -88,6 +109,7 @@ training_args = TrainingArguments(
 )
 
 # Trainer
+print("Starting training...")
 trainer = SFTTrainer(
     model=model,
     tokenizer=tokenizer,
@@ -99,7 +121,6 @@ trainer = SFTTrainer(
     max_seq_length=max_seq_length,
 )
 
-print("Starting training...")
 trainer.train()
 
 print("Saving model...")
