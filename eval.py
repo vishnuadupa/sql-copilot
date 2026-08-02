@@ -92,13 +92,24 @@ def load_qwen(model_name, adapter_path=None):
 
 
 def generate_sql(model, tokenizer, question, schema):
+    """Greedy decoding (do_sample=False), not random sampling.
+
+    An accuracy eval must measure the model's single most-confident
+    answer, not one random draw from its output distribution. With
+    do_sample=True/temperature=0.7, two runs of the exact same prompt can
+    legitimately produce different completions and therefore different
+    scores -- confirmed here: identical prompts scored very differently
+    across consecutive eval runs. Greedy decoding is deterministic and
+    reproducible, and picks the highest-probability (most-trained-on)
+    completion, which for this narrowly-adapted LoRA is typically the
+    correct one.
+    """
     prompt = build_prompt(question, schema)
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     outputs = model.generate(
         **inputs,
         max_new_tokens=256,
-        temperature=0.7,
-        do_sample=True,
+        do_sample=False,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.eos_token_id,
     )
@@ -107,11 +118,17 @@ def generate_sql(model, tokenizer, question, schema):
 
 
 def eval_groq(question, schema):
-    """Llama-3.1-8B via Groq's free API (OpenAI-compatible chat completions)."""
+    """Llama-3.1-8B via Groq's free API (OpenAI-compatible chat completions).
+
+    temperature=0 for the same reason as greedy decoding above: an
+    accuracy eval needs the model's single most-confident answer, not a
+    sample that can vary between identical calls.
+    """
     try:
         completion = groq_client.chat.completions.create(
             model="llama-3.1-8b-instant",
             max_tokens=256,
+            temperature=0,
             messages=[{"role": "user", "content": build_prompt(question, schema)}],
         )
         return extract_sql(completion.choices[0].message.content)

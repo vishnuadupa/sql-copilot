@@ -81,10 +81,13 @@ SQL:
 
     try:
         inputs = tokenizer(prompt, return_tensors="pt")
+        # Greedy decoding, not sampling: a SQL generator should return its
+        # single most-confident answer, not a random draw that can vary
+        # between identical requests.
         outputs = model.generate(
             **inputs,
             max_new_tokens=256,
-            temperature=0.7,
+            do_sample=False,
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.eos_token_id,
         )
@@ -185,10 +188,11 @@ SQL:
 """
 
     inputs = tokenizer(prompt, return_tensors="pt")
+    # Greedy decoding — see note in /predict above.
     outputs = model.generate(
         **inputs,
         max_new_tokens=256,
-        temperature=0.7,
+        do_sample=False,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.eos_token_id,
     )
