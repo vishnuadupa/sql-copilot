@@ -109,7 +109,14 @@ def eval_groq(question, schema):
         return None
 
 
-def run_eval(model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", adapter_path="./qwen-sql-lora"):
+def run_eval(model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", adapter_path="./qwen-sql-lora",
+             results_path="eval_results.csv"):
+    """Runs eval, saving each row to disk as it completes and resuming from
+    any partial results_path already on disk. Colab has disconnected mid-run
+    more than once this session, and unlike training this loop previously had
+    no checkpointing at all -- a disconnect meant re-running all 100 examples
+    from zero. Incremental save + resume fixes that.
+    """
     print("Loading b-mc2/sql-create-context dataset...")
     raw = load_dataset("b-mc2/sql-create-context")
 
@@ -117,33 +124,49 @@ def run_eval(model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", adapter_path="./qwen
     full = raw["train"].shuffle(seed=42)
     val_data = full.select(range(100))
 
-    print("Loading base Qwen (no fine-tuning)...")
-    base_model, base_tokenizer = load_qwen(model_name)
-
-    print("Loading fine-tuned Qwen (LoRA adapter)...")
-    ft_model, ft_tokenizer = load_qwen(model_name, adapter_path=adapter_path)
-
     results = []
+    start_index = 0
+    if os.path.exists(results_path):
+        existing_df = pd.read_csv(results_path)
+        results = existing_df.to_dict("records")
+        start_index = len(results)
+        print(f"Found existing {results_path} with {start_index} rows — resuming from example {start_index + 1}.")
 
-    for i, example in enumerate(val_data):
-        question = example["question"]
-        gold_sql = example["answer"]
-        schema = example["context"]
+    if start_index >= len(val_data):
+        print("All examples already evaluated.")
+        df = pd.DataFrame(results)
+    else:
+        print("Loading base Qwen (no fine-tuning)...")
+        base_model, base_tokenizer = load_qwen(model_name)
 
-        print(f"[{i + 1}/{len(val_data)}] {question[:60]}...")
+        print("Loading fine-tuned Qwen (LoRA adapter)...")
+        ft_model, ft_tokenizer = load_qwen(model_name, adapter_path=adapter_path)
 
-        pred_base = generate_sql(base_model, base_tokenizer, question, schema)
-        pred_ft = generate_sql(ft_model, ft_tokenizer, question, schema)
-        pred_groq = eval_groq(question, schema)
+        for i in range(start_index, len(val_data)):
+            example = val_data[i]
+            question = example["question"]
+            gold_sql = example["answer"]
+            schema = example["context"]
 
-        results.append({
-            "question": question[:60],
-            "base_qwen": int(sql_match(pred_base, gold_sql)),
-            "qwen_finetuned": int(sql_match(pred_ft, gold_sql)),
-            "groq_llama": int(sql_match(pred_groq, gold_sql)) if pred_groq else 0,
-        })
+            print(f"[{i + 1}/{len(val_data)}] {question[:60]}...")
 
-    df = pd.DataFrame(results)
+            pred_base = generate_sql(base_model, base_tokenizer, question, schema)
+            pred_ft = generate_sql(ft_model, ft_tokenizer, question, schema)
+            pred_groq = eval_groq(question, schema)
+
+            row = {
+                "question": question[:60],
+                "base_qwen": int(sql_match(pred_base, gold_sql)),
+                "qwen_finetuned": int(sql_match(pred_ft, gold_sql)),
+                "groq_llama": int(sql_match(pred_groq, gold_sql)) if pred_groq else 0,
+            }
+            results.append(row)
+
+            # Save after every example, not just at the end, so a disconnect
+            # loses at most one in-flight example instead of the whole run.
+            pd.DataFrame(results).to_csv(results_path, index=False)
+
+        df = pd.DataFrame(results)
     print("\n" + "=" * 60)
     print("EVALUATION RESULTS (normalized exact-match accuracy)")
     print("Same real schema given to all 3 models; eval set disjoint from training data")
@@ -152,8 +175,8 @@ def run_eval(model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", adapter_path="./qwen
     print(f"Qwen Fine-tuned: {df['qwen_finetuned'].mean():.2%}")
     print(f"Groq Llama:      {df['groq_llama'].mean():.2%}")
 
-    df.to_csv("eval_results.csv", index=False)
-    print("\nResults saved to eval_results.csv")
+    df.to_csv(results_path, index=False)
+    print(f"\nResults saved to {results_path}")
     return df
 
 
