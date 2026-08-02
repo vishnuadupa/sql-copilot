@@ -7,12 +7,9 @@ Run on Colab with free T4 GPU. ~1-2 hours total.
 from unsloth import FastLanguageModel
 import yaml
 import torch
-from transformers import TrainingArguments
 from peft import LoraConfig, TaskType
-from trl import SFTTrainer
-from datasets import Dataset
-import json
-import subprocess
+from trl import SFTTrainer, SFTConfig
+from datasets import load_dataset, Dataset
 
 # Load config
 with open("config.yaml") as f:
@@ -31,33 +28,15 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     load_in_4bit=True,
 )
 
-# Download Spider dataset from GitHub
-print("Downloading Spider dataset...")
-try:
-    subprocess.run(
-        ["git", "clone", "https://github.com/taoyds/spider.git", "/tmp/spider"],
-        capture_output=True,
-        timeout=60,
-    )
-    with open("/tmp/spider/train_spider.json") as f:
-        spider_train = json.load(f)[:500]  # 500 examples for speed
-    print(f"Loaded {len(spider_train)} training examples")
-except Exception as e:
-    print(f"Warning: Could not download Spider: {e}")
-    print("Using minimal dataset for demo...")
-    spider_train = [
-        {
-            "question": "Show me the top customers by revenue",
-            "query": "SELECT customer_id, SUM(amount) as revenue FROM orders GROUP BY customer_id ORDER BY revenue DESC LIMIT 5",
-            "db_id": "sales",
-        }
-    ] * 10
+# Load Spider dataset — parquet mirror on HF Hub, no loading script needed
+print("Loading Spider dataset from HF Hub...")
+raw_dataset = load_dataset("xlangai/spider")
 
-def format_prompt(item):
+def format_prompt(example):
     """Format training example."""
-    question = item.get("question", "")
-    sql = item.get("query", "")
-    db_id = item.get("db_id", "")
+    question = example.get("question", "")
+    sql = example.get("query", "")
+    db_id = example.get("db_id", "")
 
     prompt = f"""You are a SQL expert. Generate valid SQL.
 
@@ -69,9 +48,13 @@ SQL:
 {sql}"""
     return {"text": prompt}
 
-train_texts = [format_prompt(item) for item in spider_train]
-train_dataset = Dataset.from_dict({"text": [d["text"] for d in train_texts]})
-eval_dataset = train_dataset.select(range(min(50, len(train_dataset))))
+train_dataset = raw_dataset["train"].map(format_prompt)
+eval_dataset = raw_dataset["validation"].map(format_prompt).select(
+    range(min(100, len(raw_dataset["validation"])))
+)
+
+print(f"Training examples: {len(train_dataset)}")
+print(f"Eval examples: {len(eval_dataset)}")
 
 # LoRA config
 peft_config = LoraConfig(
@@ -83,8 +66,9 @@ peft_config = LoraConfig(
     task_type=TaskType.CAUSAL_LM,
 )
 
-# Training args
-training_args = TrainingArguments(
+# Training args — using SFTConfig (modern TRL API bundles seq-length/packing here,
+# not in the trainer constructor, and field names shift between TRL versions)
+training_args = SFTConfig(
     output_dir=cfg["training"]["output_dir"],
     num_train_epochs=cfg["training"]["epochs"],
     per_device_train_batch_size=cfg["training"]["batch_size"],
@@ -94,9 +78,9 @@ training_args = TrainingArguments(
     lr_scheduler_type="cosine",
     warmup_steps=50,
     logging_steps=50,
-    eval_steps=100,
-    save_steps=100,
-    evaluation_strategy="steps",
+    eval_steps=200,
+    save_steps=200,
+    eval_strategy="steps",
     save_strategy="steps",
     save_total_limit=2,
     load_best_model_at_end=True,
@@ -106,19 +90,20 @@ training_args = TrainingArguments(
     hub_strategy="every_save",
     fp16=True,
     optim="paged_adamw_32bit",
+    report_to=[],
+    dataset_text_field="text",
+    max_seq_length=max_seq_length,
+    packing=False,
 )
 
 # Trainer
 print("Starting training...")
 trainer = SFTTrainer(
     model=model,
-    tokenizer=tokenizer,
     train_dataset=train_dataset,
     eval_dataset=eval_dataset,
     peft_config=peft_config,
     args=training_args,
-    packing=False,
-    max_seq_length=max_seq_length,
 )
 
 trainer.train()

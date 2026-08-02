@@ -1,0 +1,10 @@
+# Training-only deps for Colab. No hard version pins on
+# transformers/peft/trl/torch — unsloth pulls in the exact
+# versions it needs, and pinning older ones here just creates
+# conflicts (this bit us in practice: unsloth wanted transformers
+# 5.5.0, our old pin was 4.36.2).
+unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git
+unsloth_zoo
+bitsandbytes
+pyyaml
+datasets

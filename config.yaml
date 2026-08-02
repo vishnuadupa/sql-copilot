@@ -10,7 +10,7 @@ lora:
 
 training:
   output_dir: "./qwen-sql-lora"
-  hub_model_id: "YOUR_HF_USERNAME/qwen-sql-lora"  # Change this before training
+  hub_model_id: "vishnuadupa/qwen-sql-lora"
   epochs: 3
   batch_size: 4
   gradient_accumulation_steps: 2
