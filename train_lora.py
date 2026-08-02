@@ -106,7 +106,17 @@ trainer = SFTTrainer(
     args=training_args,
 )
 
-trainer.train()
+# Auto-resume from latest checkpoint if interrupted
+import os
+checkpoint_dir = cfg["training"]["output_dir"]
+latest_checkpoint = None
+if os.path.exists(checkpoint_dir):
+    checkpoints = [d for d in os.listdir(checkpoint_dir) if d.startswith("checkpoint-")]
+    if checkpoints:
+        latest_checkpoint = os.path.join(checkpoint_dir, sorted(checkpoints)[-1])
+        print(f"Resuming from checkpoint: {latest_checkpoint}")
+
+trainer.train(resume_from_checkpoint=latest_checkpoint)
 
 print("Saving model...")
 model.save_pretrained(cfg["training"]["output_dir"])

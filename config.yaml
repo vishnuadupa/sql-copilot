@@ -15,7 +15,9 @@ training:
   batch_size: 4
   gradient_accumulation_steps: 2
   lr: 0.0002
-  eval_steps: 200
+  save_steps: 100
+  eval_steps: 100
+  save_total_limit: 5
 
 inference:
   temperature: 0.7
