@@ -21,9 +21,18 @@ from datasets import load_dataset
 # real output_dir (Drive-persisted) or pushes to the real Hub model.
 QUICK_TEST = os.environ.get("QUICK_TEST") == "1"
 
+# CONFIG_PATH lets a second machine (e.g. a local GPU) train in parallel
+# using its own config — own output_dir, own hub_model_id. Running two
+# training processes with the SAME hub_model_id at the same time would
+# push interleaved/conflicting commits to one Hub repo, silently
+# corrupting whichever one pushes last; separate configs point at
+# separate Hub repos so the two runs can never collide.
+config_path = os.environ.get("CONFIG_PATH", "config.yaml")
+
 # Load config
-with open("config.yaml") as f:
+with open(config_path) as f:
     cfg = yaml.safe_load(f)
+print(f"Using config: {config_path}")
 
 # Model setup
 model_name = cfg["model"]["name"]
