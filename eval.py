@@ -116,6 +116,14 @@ def run_eval(model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", adapter_path="./qwen
     more than once this session, and unlike training this loop previously had
     no checkpointing at all -- a disconnect meant re-running all 100 examples
     from zero. Incremental save + resume fixes that.
+
+    IMPORTANT: any pre-existing results_path is only trusted if it carries a
+    matching signature (model_name + adapter_path, tagged next to the CSV).
+    A first version of this resume logic trusted ANY existing CSV blindly --
+    which meant a stale file left over from an earlier/interrupted/different
+    run got silently reported as "already complete" results, without ever
+    re-running inference on the actual current model. That produced numbers
+    wildly inconsistent with a direct manual check of the same adapter.
     """
     print("Loading b-mc2/sql-create-context dataset...")
     raw = load_dataset("b-mc2/sql-create-context")
@@ -124,13 +132,29 @@ def run_eval(model_name="Qwen/Qwen2.5-Coder-1.5B-Instruct", adapter_path="./qwen
     full = raw["train"].shuffle(seed=42)
     val_data = full.select(range(100))
 
+    run_signature = f"{model_name}|{adapter_path}"
+    signature_path = results_path + ".signature"
+
     results = []
     start_index = 0
-    if os.path.exists(results_path):
-        existing_df = pd.read_csv(results_path)
-        results = existing_df.to_dict("records")
-        start_index = len(results)
-        print(f"Found existing {results_path} with {start_index} rows — resuming from example {start_index + 1}.")
+    if os.path.exists(results_path) and os.path.exists(signature_path):
+        with open(signature_path) as f:
+            existing_signature = f.read().strip()
+        if existing_signature == run_signature:
+            existing_df = pd.read_csv(results_path)
+            results = existing_df.to_dict("records")
+            start_index = len(results)
+            print(f"Found existing {results_path} matching this model/adapter — "
+                  f"resuming from example {start_index + 1}.")
+        else:
+            print(f"Found {results_path} but it's from a different model/adapter "
+                  f"(signature mismatch) — ignoring it and starting fresh.")
+    elif os.path.exists(results_path):
+        print(f"Found {results_path} with no signature file (from before this safety "
+              f"check existed) — cannot verify it matches this model, starting fresh.")
+
+    with open(signature_path, "w") as f:
+        f.write(run_signature)
 
     if start_index >= len(val_data):
         print("All examples already evaluated.")
