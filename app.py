@@ -3,6 +3,13 @@ FastAPI + Gradio UI for SQL Copilot.
 Inference endpoint + interactive demo.
 """
 
+# `spaces` MUST be the first import, before torch/transformers/peft or
+# anything that touches CUDA -- confirmed via a hard crash: "RuntimeError:
+# CUDA has been initialized before importing the `spaces` package."
+# ZeroGPU's own init logic requires it to run before any CUDA-related
+# package is even imported (not just used).
+import spaces
+
 import os
 import sqlite3
 import json
@@ -12,7 +19,6 @@ import gradio as gr
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import AutoPeftModelForCausalLM
 import torch
-import spaces
 
 # Model is loaded once at IMPORT TIME, not inside a FastAPI lifespan hook.
 # HF Spaces' Gradio SDK serves the `demo` Blocks object directly and never
