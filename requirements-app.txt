@@ -7,3 +7,9 @@ peft
 fastapi
 uvicorn
 spaces
+# Required to load the fine-tuned adapter: it was trained in 4-bit
+# (load_in_4bit=True via Unsloth), so loading + merging it back to full
+# precision needs bitsandbytes even though the final merged model doesn't
+# run in 4-bit. Without this, loading silently failed and fell back to
+# the untrained base model.
+bitsandbytes
