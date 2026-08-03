@@ -78,8 +78,20 @@ SQL:
 
 
 def load_qwen(model_name, adapter_path=None):
-    """Load Qwen once (base or with a LoRA adapter merged in)."""
-    if adapter_path and os.path.exists(adapter_path):
+    """Load Qwen once (base or with a LoRA adapter merged in).
+
+    BUG FIXED: previously gated on os.path.exists(adapter_path), which
+    only works for local filesystem paths. Passing a Hub repo ID (e.g.
+    "vishnuadupa/qwen-sql-lora") made this check silently False on any
+    machine without that exact local folder, falling through to the
+    base-model branch -- meaning "fine-tuned" and "base" evaluated the
+    IDENTICAL model whenever adapter_path was a Hub ID rather than a
+    local dir. AutoPeftModelForCausalLM.from_pretrained() already handles
+    both local paths and Hub IDs natively, so just always try it when an
+    adapter_path is given, with a local-only existence check no longer
+    part of the decision.
+    """
+    if adapter_path:
         tokenizer = AutoTokenizer.from_pretrained(adapter_path)
         model = AutoPeftModelForCausalLM.from_pretrained(adapter_path, device_map="auto")
         model = model.merge_and_unload()
