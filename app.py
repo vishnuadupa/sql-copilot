@@ -215,6 +215,9 @@ def gradio_interface(question, schema):
         _model.to(device)
         sql = generate_sql_text(question, schema, device=device)
     except Exception as e:
+        import traceback
+        print(f"gradio_interface generation error: {e}")
+        traceback.print_exc()
         # result_output is a gr.JSON component: it always requires a
         # JSON-serializable value, never a bare string, or it crashes with
         # "Invalid JSON string" -- confirmed via server logs to be exactly
