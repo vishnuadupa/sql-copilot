@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import gradio as gr
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from peft import AutoPeftModelForCausalLM
+from peft import PeftModel
 import torch
 
 # Model is loaded once at IMPORT TIME, not inside a FastAPI lifespan hook.
@@ -29,21 +29,31 @@ import torch
 # Also: under HF's free ZeroGPU tier, no GPU is visible at import time --
 # it's only allocated for the duration of an @spaces.GPU-decorated call.
 # So load on CPU here, then move to CUDA inside gradio_interface() below.
+#
+# IMPORTANT: load the base model in plain fp32 and apply the adapter via
+# plain PeftModel, NOT AutoPeftModelForCausalLM. The adapter was trained
+# with load_in_4bit=True, so its saved config carries a 4-bit quantization
+# config; AutoPeftModelForCausalLM auto-detects and applies that at load
+# time, which requires an actual CUDA device to instantiate -- confirmed
+# via a hard failure: "Could not load fine-tuned model (No CUDA GPUs are
+# available)" at import time, since ZeroGPU grants no GPU until a
+# @spaces.GPU-decorated call actually runs. Loading in plain fp32 needs no
+# quantization step at all, so it works with zero GPU present.
 print("Loading fine-tuned model...")
 ADAPTER_PATH = "vishnuadupa/qwen-sql-lora"
+BASE_MODEL_NAME = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
 
 try:
     print(f"Loading adapter from HF Hub: {ADAPTER_PATH}")
     tokenizer = AutoTokenizer.from_pretrained(ADAPTER_PATH)
-    model = AutoPeftModelForCausalLM.from_pretrained(ADAPTER_PATH)
+    base_model = AutoModelForCausalLM.from_pretrained(BASE_MODEL_NAME, torch_dtype=torch.float32)
+    model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
     model = model.merge_and_unload()
     print("Fine-tuned model loaded.")
 except Exception as e:
     print(f"Could not load fine-tuned model ({e}); falling back to base model.")
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-1.5B-Instruct")
-    model = AutoModelForCausalLM.from_pretrained(
-        "Qwen/Qwen2.5-Coder-1.5B-Instruct", torch_dtype=torch.float16
-    )
+    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_NAME)
+    model = AutoModelForCausalLM.from_pretrained(BASE_MODEL_NAME, torch_dtype=torch.float32)
     print("Base model loaded.")
 
 model = model.to("cpu")
