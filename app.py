@@ -13,6 +13,7 @@ import gradio as gr
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import AutoPeftModelForCausalLM
 import torch
+import spaces
 
 # Global model & tokenizer
 model = None
@@ -168,8 +169,15 @@ def execute_sql(sql: str):
     except Exception as e:
         return f"Error: {str(e)}"
 
+@spaces.GPU
 def gradio_interface(question, schema):
-    """Gradio interface function."""
+    """Gradio interface function.
+
+    @spaces.GPU is required by HF Spaces' free ZeroGPU tier -- without it,
+    the Space fails at startup with "No @spaces.GPU function detected"
+    since ZeroGPU only allocates GPU time to functions explicitly marked
+    this way.
+    """
     if not model:
         return "Model not loaded", "N/A"
 
