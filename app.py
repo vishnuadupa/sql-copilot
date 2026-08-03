@@ -20,46 +20,48 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import PeftModel
 import torch
 
-# Model is loaded once at IMPORT TIME, not inside a FastAPI lifespan hook.
-# HF Spaces' Gradio SDK serves the `demo` Blocks object directly and never
-# runs `app`'s ASGI lifespan -- confirmed via server logs that this left
-# model/tokenizer permanently None, so every request hit the "Model not
-# loaded" fallback and crashed the gr.JSON output component with it.
-#
-# Also: under HF's free ZeroGPU tier, no GPU is visible at import time --
-# it's only allocated for the duration of an @spaces.GPU-decorated call.
-# So load on CPU here, then move to CUDA inside gradio_interface() below.
-#
-# IMPORTANT: load the base model in plain fp32 and apply the adapter via
-# plain PeftModel, NOT AutoPeftModelForCausalLM. The adapter was trained
-# with load_in_4bit=True, so its saved config carries a 4-bit quantization
-# config; AutoPeftModelForCausalLM auto-detects and applies that at load
-# time, which requires an actual CUDA device to instantiate -- confirmed
-# via a hard failure: "Could not load fine-tuned model (No CUDA GPUs are
-# available)" at import time, since ZeroGPU grants no GPU until a
-# @spaces.GPU-decorated call actually runs. Loading in plain fp32 needs no
-# quantization step at all, so it works with zero GPU present.
-print("Loading fine-tuned model...")
 ADAPTER_PATH = "vishnuadupa/qwen-sql-lora"
 BASE_MODEL_NAME = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
 
-try:
-    print(f"Loading adapter from HF Hub: {ADAPTER_PATH}")
-    tokenizer = AutoTokenizer.from_pretrained(ADAPTER_PATH)
-    base_model = AutoModelForCausalLM.from_pretrained(BASE_MODEL_NAME, torch_dtype=torch.float32)
-    model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
-    model = model.merge_and_unload()
-    print("Fine-tuned model loaded.")
-except Exception as e:
-    import traceback
-    print(f"Could not load fine-tuned model ({e}); falling back to base model.")
-    print("FULL TRACEBACK:")
-    traceback.print_exc()
-    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_NAME)
-    model = AutoModelForCausalLM.from_pretrained(BASE_MODEL_NAME, torch_dtype=torch.float32)
-    print("Base model loaded.")
+# Model is loaded LAZILY, on first use, from inside the @spaces.GPU-decorated
+# gradio_interface() -- not at import time, and not in a FastAPI lifespan
+# hook (HF Spaces' Gradio SDK serves the `demo` Blocks object directly and
+# never runs `app`'s ASGI lifespan, confirmed via logs: model/tokenizer
+# stayed permanently None, so every request hit "Model not loaded").
+#
+# Loading at plain module level doesn't work either: `spaces` installs a
+# global torch patch the moment it's imported that intercepts ALL tensor
+# ops -- including a plain CPU safetensors.load_file() call -- and routes
+# them through a GPU-context check. Confirmed via full traceback: loading
+# the adapter at import time crashed inside that patch with "No CUDA GPUs
+# are available", regardless of dtype/quantization choices, simply
+# because no @spaces.GPU call was active yet. So loading must happen
+# inside the decorated function itself, the first time it's actually
+# invoked (which IS a valid GPU-allocated context under ZeroGPU).
+_model = None
+_tokenizer = None
 
-model = model.to("cpu")
+
+def _ensure_model_loaded():
+    global _model, _tokenizer
+    if _model is not None:
+        return
+    print("Loading fine-tuned model...")
+    try:
+        print(f"Loading adapter from HF Hub: {ADAPTER_PATH}")
+        _tokenizer = AutoTokenizer.from_pretrained(ADAPTER_PATH)
+        base_model = AutoModelForCausalLM.from_pretrained(BASE_MODEL_NAME, torch_dtype=torch.float32)
+        _model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
+        _model = _model.merge_and_unload()
+        print("Fine-tuned model loaded.")
+    except Exception as e:
+        import traceback
+        print(f"Could not load fine-tuned model ({e}); falling back to base model.")
+        traceback.print_exc()
+        _tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_NAME)
+        _model = AutoModelForCausalLM.from_pretrained(BASE_MODEL_NAME, torch_dtype=torch.float32)
+        print("Base model loaded.")
+
 
 app = FastAPI(title="SQL Copilot")
 
@@ -91,19 +93,20 @@ SQL:
 
 
 def generate_sql_text(question: str, schema: str, device: str = "cpu") -> str:
+    _ensure_model_loaded()
     prompt = build_prompt(question, schema)
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    inputs = _tokenizer(prompt, return_tensors="pt").to(device)
     # Greedy decoding, not sampling: a SQL generator should return its
     # single most-confident answer, not a random draw that can vary
     # between identical requests.
-    outputs = model.generate(
+    outputs = _model.generate(
         **inputs,
         max_new_tokens=256,
         do_sample=False,
-        eos_token_id=tokenizer.eos_token_id,
-        pad_token_id=tokenizer.eos_token_id,
+        eos_token_id=_tokenizer.eos_token_id,
+        pad_token_id=_tokenizer.eos_token_id,
     )
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    response = _tokenizer.decode(outputs[0], skip_special_tokens=True)
     sql = response.split("SQL:")[-1].strip()
 
     if "```" in sql:
@@ -206,9 +209,10 @@ def gradio_interface(question, schema):
     so the model is moved to "cuda" here rather than at import time.
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model.to(device)
 
     try:
+        _ensure_model_loaded()  # first call here loads inside a valid GPU context
+        _model.to(device)
         sql = generate_sql_text(question, schema, device=device)
     except Exception as e:
         # result_output is a gr.JSON component: it always requires a
