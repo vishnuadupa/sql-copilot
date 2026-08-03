@@ -51,7 +51,10 @@ try:
     model = model.merge_and_unload()
     print("Fine-tuned model loaded.")
 except Exception as e:
+    import traceback
     print(f"Could not load fine-tuned model ({e}); falling back to base model.")
+    print("FULL TRACEBACK:")
+    traceback.print_exc()
     tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_NAME)
     model = AutoModelForCausalLM.from_pretrained(BASE_MODEL_NAME, torch_dtype=torch.float32)
     print("Base model loaded.")
