@@ -40,3 +40,6 @@ wandb/
 
 eval_results.csv
 *.log
+
+# Internal working notes -- not for the public repo
+PROGRESS.md

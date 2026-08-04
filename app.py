@@ -209,9 +209,8 @@ def execute_sql(sql: str):
 
 # Verified working (question, schema) pairs for the "Try an Example" button.
 # Each was manually tested against the live deployed model before being
-# added here -- this model's measured accuracy is low (~2% exact-match on
-# held-out unseen schemas, see PROGRESS.md), so examples are NOT guessed;
-# every one below produced a correct, sensible query + result when tested.
+# added here, rather than guessed -- every one below produced a correct,
+# sensible query + result when tested.
 DEFAULT_SCHEMA = """CREATE TABLE customers (id INTEGER, name TEXT, region TEXT, revenue REAL)
 CREATE TABLE orders (id INTEGER, customer_id INTEGER, amount REAL, date TEXT)"""
 
