@@ -13,6 +13,7 @@ import spaces
 import os
 import sqlite3
 import json
+import random
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import gradio as gr
@@ -186,16 +187,49 @@ create_sample_db()
 
 
 def execute_sql(sql: str):
-    """Execute SQL, returning (results_or_None, error_message_or_None)."""
+    """Execute SQL, returning (results_or_None, error_message_or_None).
+
+    Results are returned as a list of {column: value} dicts (using
+    cursor.description for column names) rather than bare tuples/lists --
+    much more readable in the JSON output (e.g. {"name": "TechStart"}
+    instead of an unlabeled ["TechStart"]).
+    """
     try:
         conn = sqlite3.connect("sample.db")
         cursor = conn.cursor()
         cursor.execute(sql)
-        results = cursor.fetchall()
+        columns = [d[0] for d in cursor.description] if cursor.description else []
+        rows = cursor.fetchall()
         conn.close()
+        results = [dict(zip(columns, row)) for row in rows]
         return results, None
     except Exception as e:
         return None, str(e)
+
+
+# Verified working (question, schema) pairs for the "Try an Example" button.
+# Each was manually tested against the live deployed model before being
+# added here -- this model's measured accuracy is low (~2% exact-match on
+# held-out unseen schemas, see PROGRESS.md), so examples are NOT guessed;
+# every one below produced a correct, sensible query + result when tested.
+DEFAULT_SCHEMA = """CREATE TABLE customers (id INTEGER, name TEXT, region TEXT, revenue REAL)
+CREATE TABLE orders (id INTEGER, customer_id INTEGER, amount REAL, date TEXT)"""
+
+EXAMPLES = [
+    {
+        "question": "Top 5 customers by revenue in Northeast",
+        "schema": DEFAULT_SCHEMA,
+    },
+    {
+        "question": "List all customers in the West region",
+        "schema": DEFAULT_SCHEMA,
+    },
+]
+
+
+def pick_random_example():
+    example = random.choice(EXAMPLES)
+    return example["question"], example["schema"]
 
 
 @spaces.GPU
@@ -227,13 +261,21 @@ def gradio_interface(question, schema):
     results, error = execute_sql(sql)
     if error:
         return sql, json.dumps({"error": error})
+    if not results:
+        return sql, json.dumps({"info": "Query executed successfully — no matching rows."})
     return sql, json.dumps(results, indent=2)
 
 
 # Gradio UI
-with gr.Blocks(title="SQL Copilot") as demo:
-    gr.Markdown("# SQL Copilot — NL → SQL")
-    gr.Markdown("Fine-tuned Qwen2.5-Coder on Spider dataset. Ask a question, get SQL.")
+with gr.Blocks(title="SQL Copilot", theme=gr.themes.Soft(primary_hue="orange")) as demo:
+    gr.Markdown("# 🗄️ SQL Copilot — Natural Language → SQL")
+    gr.Markdown(
+        "Fine-tuned Qwen2.5-Coder-1.5B (LoRA) on the b-mc2/sql-create-context dataset. "
+        "Type a question and schema, or click **Try an Example** for one that's verified to work well.\n\n"
+        "*Honest note: this is a small, lightly-fine-tuned model evaluated on unseen schemas — it "
+        "sometimes gets things exactly right and sometimes hallucinates a filter condition that wasn't "
+        "asked for. Both are shown here on purpose.*"
+    )
 
     with gr.Row():
         with gr.Column():
@@ -242,22 +284,29 @@ with gr.Blocks(title="SQL Copilot") as demo:
                 placeholder="e.g., 'Top 5 customers by revenue in Northeast'",
                 lines=2
             )
-            schema = gr.Textbox(
-                label="Database Schema",
-                placeholder="Paste your schema here (CREATE TABLE statements)",
+            schema = gr.Code(
+                label="Database Schema (CREATE TABLE statements)",
+                language="sql",
                 lines=5,
-                # CREATE TABLE format, not a "Table: x (...)" summary --
-                # matches what the model was actually trained on
-                # (b-mc2/sql-create-context), so the default example
-                # actually demonstrates the model's real behavior.
-                value="""CREATE TABLE customers (id INTEGER, name TEXT, region TEXT, revenue REAL)
-CREATE TABLE orders (id INTEGER, customer_id INTEGER, amount REAL, date TEXT)"""
+                value=DEFAULT_SCHEMA,
             )
-            submit_btn = gr.Button("Generate SQL", variant="primary")
+            with gr.Row():
+                example_btn = gr.Button("🎲 Try an Example")
+                submit_btn = gr.Button("Generate SQL", variant="primary")
+            gr.Markdown(
+                "*First request after the app has been idle takes ~15-20s "
+                "(free-tier GPU has to reload the model); after that it's fast.*"
+            )
 
         with gr.Column():
             sql_output = gr.Code(label="Generated SQL", language="sql")
             result_output = gr.JSON(label="Query Results")
+
+    example_btn.click(
+        fn=pick_random_example,
+        inputs=[],
+        outputs=[question, schema]
+    )
 
     submit_btn.click(
         fn=gradio_interface,
